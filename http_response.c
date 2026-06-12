@@ -1,14 +1,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/socket.h>
+#include "io.h"
 #include "http_response.h"
 
-/* Helper: write exactly `len` bytes to `fd`. */
-static int write_all(int fd, const char *buf, int len) {
+static int write_all(io_t *io, const char *buf, int len) {
     int sent = 0;
     while (sent < len) {
-        ssize_t n = write(fd, buf + sent, (size_t)(len - sent));
+        ssize_t n = io_write(io, buf + sent, (size_t)(len - sent));
         if (n <= 0) return -1;
         sent += (int)n;
     }
@@ -62,7 +61,6 @@ int http_response_write(const http_response_t *res, char *buf, int cap) {
     for (int i = 0; i < res->header_count; i++)
         APPEND("%s\r\n", res->headers[i]);
 
-    /* Content-Length from body */
     if (res->body && res->body_len > 0)
         APPEND("Content-Length: %d\r\n", res->body_len);
     else
@@ -82,15 +80,15 @@ int http_response_write(const http_response_t *res, char *buf, int cap) {
     return written;
 }
 
-int http_response_send(const http_response_t *res, int fd) {
+int http_response_send(const http_response_t *res, io_t *io) {
     char buf[65536];
     int len = http_response_write(res, buf, sizeof(buf));
     if (len < 0)
         return -1;
-    return write_all(fd, buf, len);
+    return write_all(io, buf, len);
 }
 
-int http_response_send_chunked(const http_response_t *res, int fd) {
+int http_response_send_chunked(const http_response_t *res, io_t *io) {
     char hdr[2048];
     int hdr_len = 0;
 
@@ -112,19 +110,17 @@ int http_response_send_chunked(const http_response_t *res, int fd) {
 
 #undef HAPPEND
 
-    if (write_all(fd, hdr, hdr_len) < 0)
+    if (write_all(io, hdr, hdr_len) < 0)
         return -1;
 
-    /* Send body as a single chunk (or skip if empty) */
     if (res->body && res->body_len > 0) {
         char chunk_hdr[32];
         int chunk_hdr_len = snprintf(chunk_hdr, sizeof(chunk_hdr),
                                      "%x\r\n", res->body_len);
-        if (write_all(fd, chunk_hdr, chunk_hdr_len) < 0) return -1;
-        if (write_all(fd, res->body, res->body_len)  < 0) return -1;
-        if (write_all(fd, "\r\n", 2)                 < 0) return -1;
+        if (write_all(io, chunk_hdr, chunk_hdr_len) < 0) return -1;
+        if (write_all(io, res->body, res->body_len)  < 0) return -1;
+        if (write_all(io, "\r\n", 2)                 < 0) return -1;
     }
 
-    /* Terminating chunk */
-    return write_all(fd, "0\r\n\r\n", 5);
+    return write_all(io, "0\r\n\r\n", 5);
 }

@@ -2,6 +2,7 @@
 #define HTTP_RESPONSE_H
 
 #include <stddef.h>
+#include "io.h"
 
 #define MAX_RESP_HEADERS  32
 #define MAX_RESP_HDR_LINE 512
@@ -25,15 +26,15 @@ void        http_response_add_header(http_response_t *res,
 int         http_response_write(const http_response_t *res,
                                 char *buf, int cap);
 
-/* Convenience: send a complete response over a socket fd. */
-int         http_response_send(const http_response_t *res, int fd);
+/* Convenience: send a complete response over an io_t connection. */
+int         http_response_send(const http_response_t *res, io_t *io);
 
 /*
  * Send headers with Transfer-Encoding: chunked, then stream `body`
  * as a single chunk followed by the terminating 0-length chunk.
  * Use this when Content-Length is unknown at response-build time.
  */
-int         http_response_send_chunked(const http_response_t *res, int fd);
+int         http_response_send_chunked(const http_response_t *res, io_t *io);
 
 /* Human-readable reason phrase for common status codes. */
 const char *http_status_phrase(int code);
