@@ -9,11 +9,26 @@
 #include "http_request.h"
 #include "http_response.h"
 #include "static_files.h"
+#include "router.h"
 
 #define DEFAULT_PORT 8080
 #define BACKLOG      128
 #define BUFFER_SIZE  4096
 #define STATIC_ROOT  "www"
+
+/* ---- Built-in route handlers ---- */
+
+static int handle_health(const http_request_t *req, http_response_t *res) {
+    (void)req;
+    http_response_init(res, 200);
+    http_response_add_header(res, "Content-Type", "application/json");
+    res->body     = "{\"status\":\"ok\"}\n";
+    res->body_len = 16;
+    return 0;
+}
+
+
+static router_t g_router;
 
 static int create_server_socket(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -82,7 +97,22 @@ static void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
            req.method, req.path, req.version, req.header_count);
 
     int body_needs_free = 0;
-    static_file_serve(STATIC_ROOT, &req, &res, &body_needs_free);
+
+    /* 1. Try registered routes first */
+    int matched = router_dispatch(&g_router, &req, &res);
+
+    /* 2. Fall back to static files */
+    if (matched == 0)
+        static_file_serve(STATIC_ROOT, &req, &res, &body_needs_free);
+
+    /* 3. Internal handler error → 500 */
+    if (matched < 0) {
+        http_response_init(&res, 500);
+        http_response_add_header(&res, "Content-Type", "text/plain");
+        res.body     = "Internal Server Error\r\n";
+        res.body_len = 22;
+    }
+
     http_response_send(&res, client_fd);
 
     if (body_needs_free)
@@ -100,6 +130,10 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
+
+    /* Register routes — unmatched requests fall through to static files */
+    router_init(&g_router);
+    router_add(&g_router, "GET", "/health", MATCH_EXACT, handle_health);
 
     int server_fd = create_server_socket(port);
     if (server_fd < 0)
