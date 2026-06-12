@@ -10,11 +10,14 @@
 #include "http_response.h"
 #include "static_files.h"
 #include "router.h"
+#include "threadpool.h"
 
-#define DEFAULT_PORT 8080
-#define BACKLOG      128
-#define BUFFER_SIZE  4096
-#define STATIC_ROOT  "www"
+#define DEFAULT_PORT    8080
+#define BACKLOG         128
+#define BUFFER_SIZE     4096
+#define STATIC_ROOT     "www"
+#define NUM_THREADS     8
+#define QUEUE_CAPACITY  256
 
 /* ---- Built-in route handlers ---- */
 
@@ -65,7 +68,7 @@ static int create_server_socket(int port) {
     return fd;
 }
 
-static void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
+void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &client_addr->sin_addr, ip, sizeof(ip));
     printf("Connection from %s:%d\n", ip, ntohs(client_addr->sin_port));
@@ -135,11 +138,19 @@ int main(int argc, char *argv[]) {
     router_init(&g_router);
     router_add(&g_router, "GET", "/health", MATCH_EXACT, handle_health);
 
-    int server_fd = create_server_socket(port);
-    if (server_fd < 0)
+    threadpool_t *pool = threadpool_create(NUM_THREADS, QUEUE_CAPACITY);
+    if (!pool) {
+        fprintf(stderr, "Failed to create thread pool\n");
         return 1;
+    }
 
-    printf("Listening on port %d\n", port);
+    int server_fd = create_server_socket(port);
+    if (server_fd < 0) {
+        threadpool_destroy(pool);
+        return 1;
+    }
+
+    printf("Listening on port %d  (workers: %d)\n", port, NUM_THREADS);
 
     while (1) {
         struct sockaddr_in client_addr;
@@ -153,9 +164,11 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        handle_connection(client_fd, &client_addr);
+        if (threadpool_submit(pool, client_fd, &client_addr) < 0)
+            close(client_fd);  /* pool shutting down */
     }
 
     close(server_fd);
+    threadpool_destroy(pool);
     return 0;
 }
