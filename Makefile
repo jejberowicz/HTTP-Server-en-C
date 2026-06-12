@@ -1,7 +1,7 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -Wpedantic -std=c11 -g
 TARGET  = httpserver
-SRCS    = main.c
+SRCS    = main.c http_request.c
 
 .PHONY: all clean
 

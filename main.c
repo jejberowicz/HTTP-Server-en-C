@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include "http_request.h"
 
 #define DEFAULT_PORT 8080
 #define BACKLOG      128
@@ -53,9 +54,25 @@ static void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
 
     char buf[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-    if (n > 0) {
-        buf[n] = '\0';
-        printf("Received %zd bytes\n", n);
+    if (n <= 0) {
+        close(client_fd);
+        return;
+    }
+    buf[n] = '\0';
+
+    http_request_t req;
+    parse_result_t result = http_request_parse(buf, (int)n, &req);
+
+    if (result == PARSE_OK) {
+        printf("%s %s %s  (%d headers)\n",
+               req.method, req.path, req.version, req.header_count);
+
+        const char *host = http_request_get_header(&req, "host");
+        if (host)
+            printf("  Host: %s\n", host);
+    } else {
+        printf("  Parse error: %s\n",
+               result == PARSE_INCOMPLETE ? "incomplete" : "malformed");
     }
 
     close(client_fd);
