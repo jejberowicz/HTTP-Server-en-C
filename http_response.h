@@ -12,6 +12,7 @@ typedef struct {
     int  header_count;
     const char *body;
     int  body_len;
+    int  use_chunked;   /* send with Transfer-Encoding: chunked */
 } http_response_t;
 
 void        http_response_init(http_response_t *res, int status_code);
@@ -26,6 +27,13 @@ int         http_response_write(const http_response_t *res,
 
 /* Convenience: send a complete response over a socket fd. */
 int         http_response_send(const http_response_t *res, int fd);
+
+/*
+ * Send headers with Transfer-Encoding: chunked, then stream `body`
+ * as a single chunk followed by the terminating 0-length chunk.
+ * Use this when Content-Length is unknown at response-build time.
+ */
+int         http_response_send_chunked(const http_response_t *res, int fd);
 
 /* Human-readable reason phrase for common status codes. */
 const char *http_status_phrase(int code);

@@ -1,7 +1,19 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
 #include "http_response.h"
+
+/* Helper: write exactly `len` bytes to `fd`. */
+static int write_all(int fd, const char *buf, int len) {
+    int sent = 0;
+    while (sent < len) {
+        ssize_t n = write(fd, buf + sent, (size_t)(len - sent));
+        if (n <= 0) return -1;
+        sent += (int)n;
+    }
+    return sent;
+}
 
 const char *http_status_phrase(int code) {
     switch (code) {
@@ -75,13 +87,44 @@ int http_response_send(const http_response_t *res, int fd) {
     int len = http_response_write(res, buf, sizeof(buf));
     if (len < 0)
         return -1;
+    return write_all(fd, buf, len);
+}
 
-    int sent = 0;
-    while (sent < len) {
-        ssize_t n = write(fd, buf + sent, len - sent);
-        if (n <= 0)
-            return -1;
-        sent += (int)n;
+int http_response_send_chunked(const http_response_t *res, int fd) {
+    char hdr[2048];
+    int hdr_len = 0;
+
+#define HAPPEND(fmt, ...) \
+    do { \
+        int n = snprintf(hdr + hdr_len, (int)sizeof(hdr) - hdr_len, \
+                         fmt, ##__VA_ARGS__); \
+        if (n < 0 || n >= (int)sizeof(hdr) - hdr_len) return -1; \
+        hdr_len += n; \
+    } while (0)
+
+    HAPPEND("HTTP/1.1 %d %s\r\n",
+            res->status_code, http_status_phrase(res->status_code));
+
+    for (int i = 0; i < res->header_count; i++)
+        HAPPEND("%s\r\n", res->headers[i]);
+
+    HAPPEND("%s", "Transfer-Encoding: chunked\r\n\r\n");
+
+#undef HAPPEND
+
+    if (write_all(fd, hdr, hdr_len) < 0)
+        return -1;
+
+    /* Send body as a single chunk (or skip if empty) */
+    if (res->body && res->body_len > 0) {
+        char chunk_hdr[32];
+        int chunk_hdr_len = snprintf(chunk_hdr, sizeof(chunk_hdr),
+                                     "%x\r\n", res->body_len);
+        if (write_all(fd, chunk_hdr, chunk_hdr_len) < 0) return -1;
+        if (write_all(fd, res->body, res->body_len)  < 0) return -1;
+        if (write_all(fd, "\r\n", 2)                 < 0) return -1;
     }
-    return sent;
+
+    /* Terminating chunk */
+    return write_all(fd, "0\r\n\r\n", 5);
 }
