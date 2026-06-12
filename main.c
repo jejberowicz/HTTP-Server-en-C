@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include "http_request.h"
+#include "http_response.h"
 
 #define DEFAULT_PORT 8080
 #define BACKLOG      128
@@ -63,17 +64,31 @@ static void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
     http_request_t req;
     parse_result_t result = http_request_parse(buf, (int)n, &req);
 
-    if (result == PARSE_OK) {
-        printf("%s %s %s  (%d headers)\n",
-               req.method, req.path, req.version, req.header_count);
+    http_response_t res;
 
-        const char *host = http_request_get_header(&req, "host");
-        if (host)
-            printf("  Host: %s\n", host);
-    } else {
-        printf("  Parse error: %s\n",
-               result == PARSE_INCOMPLETE ? "incomplete" : "malformed");
+    if (result != PARSE_OK) {
+        http_response_init(&res, 400);
+        http_response_add_header(&res, "Content-Type", "text/plain");
+        res.body     = "Bad Request\r\n";
+        res.body_len = 13;
+        http_response_send(&res, client_fd);
+        close(client_fd);
+        return;
     }
+
+    printf("%s %s %s  (%d headers)\n",
+           req.method, req.path, req.version, req.header_count);
+
+    const char *host = http_request_get_header(&req, "host");
+    if (host)
+        printf("  Host: %s\n", host);
+
+    /* Default: 200 with a placeholder body (routing comes in a later commit) */
+    http_response_init(&res, 200);
+    http_response_add_header(&res, "Content-Type", "text/plain");
+    res.body     = "OK\r\n";
+    res.body_len = 4;
+    http_response_send(&res, client_fd);
 
     close(client_fd);
 }
