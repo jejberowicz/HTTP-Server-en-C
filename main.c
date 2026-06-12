@@ -8,10 +8,12 @@
 #include <arpa/inet.h>
 #include "http_request.h"
 #include "http_response.h"
+#include "static_files.h"
 
 #define DEFAULT_PORT 8080
 #define BACKLOG      128
 #define BUFFER_SIZE  4096
+#define STATIC_ROOT  "www"
 
 static int create_server_socket(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -79,16 +81,12 @@ static void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
     printf("%s %s %s  (%d headers)\n",
            req.method, req.path, req.version, req.header_count);
 
-    const char *host = http_request_get_header(&req, "host");
-    if (host)
-        printf("  Host: %s\n", host);
-
-    /* Default: 200 with a placeholder body (routing comes in a later commit) */
-    http_response_init(&res, 200);
-    http_response_add_header(&res, "Content-Type", "text/plain");
-    res.body     = "OK\r\n";
-    res.body_len = 4;
+    int body_needs_free = 0;
+    static_file_serve(STATIC_ROOT, &req, &res, &body_needs_free);
     http_response_send(&res, client_fd);
+
+    if (body_needs_free)
+        free((void *)res.body);
 
     close(client_fd);
 }
