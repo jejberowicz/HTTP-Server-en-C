@@ -25,6 +25,7 @@ const char *http_status_phrase(int code) {
         case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
+        case 431: return "Request Header Fields Too Large";
         case 500: return "Internal Server Error";
         case 501: return "Not Implemented";
         default:  return "Unknown";
@@ -80,12 +81,56 @@ int http_response_write(const http_response_t *res, char *buf, int cap) {
     return written;
 }
 
+/*
+ * Serialize status line + headers + blank line into `buf`.
+ * The body is NOT included — the caller writes it separately,
+ * which removes the 65 KB combined size limit for large files.
+ */
+static int write_headers(const http_response_t *res, char *buf, int cap) {
+    int written = 0;
+
+#define APPEND(fmt, ...) \
+    do { \
+        int n = snprintf(buf + written, cap - written, fmt, ##__VA_ARGS__); \
+        if (n < 0 || n >= cap - written) return -1; \
+        written += n; \
+    } while (0)
+
+    APPEND("HTTP/1.1 %d %s\r\n",
+           res->status_code, http_status_phrase(res->status_code));
+
+    for (int i = 0; i < res->header_count; i++)
+        APPEND("%s\r\n", res->headers[i]);
+
+    if (res->body && res->body_len > 0)
+        APPEND("Content-Length: %d\r\n", res->body_len);
+    else
+        APPEND("%s", "Content-Length: 0\r\n");
+
+    APPEND("%s", "\r\n");
+
+#undef APPEND
+
+    return written;
+}
+
 int http_response_send(const http_response_t *res, io_t *io) {
-    char buf[65536];
-    int len = http_response_write(res, buf, sizeof(buf));
-    if (len < 0)
+    /*
+     * Headers fit in a small stack buffer; body is written separately.
+     * This removes the previous 65 KB combined limit for large files.
+     */
+    char hdr_buf[4096];
+    int hdr_len = write_headers(res, hdr_buf, sizeof(hdr_buf));
+    if (hdr_len < 0)
         return -1;
-    return write_all(io, buf, len);
+
+    if (write_all(io, hdr_buf, hdr_len) < 0)
+        return -1;
+
+    if (res->body && res->body_len > 0)
+        return write_all(io, res->body, res->body_len);
+
+    return hdr_len;
 }
 
 int http_response_send_chunked(const http_response_t *res, io_t *io) {

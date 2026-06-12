@@ -106,7 +106,17 @@ void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
             buf_len += (int)n;
             buf[buf_len] = '\0';
             if (memmem(buf, (size_t)buf_len, "\r\n\r\n", 4)) break;
-            if (buf_len >= (int)sizeof(buf) - 1)             goto done;
+            if (buf_len >= (int)sizeof(buf) - 1) {
+                /* Headers too large — tell the client instead of silently closing */
+                http_response_t err;
+                http_response_init(&err, 431);
+                http_response_add_header(&err, "Content-Type", "text/plain");
+                http_response_add_header(&err, "Connection",   "close");
+                err.body     = "Request Header Fields Too Large\r\n";
+                err.body_len = 33;
+                http_response_send(&err, &io);
+                goto done;
+            }
         }
 
         http_request_t  req;
@@ -156,11 +166,19 @@ void handle_connection(int client_fd, struct sockaddr_in *client_addr) {
 
         /* Skip request body, keep pipelined bytes */
         const char *cl = http_request_get_header(&req, "content-length");
-        int content_length = cl ? atoi(cl) : 0;
+        long content_length = 0;
+        if (cl) {
+            char *end;
+            content_length = strtol(cl, &end, 10);
+            /* Reject missing, negative, or absurdly large values */
+            if (end == cl || content_length < 0 || content_length > 10 * 1024 * 1024)
+                content_length = 0;
+        }
         const char *hdr_end = (const char *)memmem(buf, (size_t)buf_len,
                                                     "\r\n\r\n", 4);
-        int consumed = (int)(hdr_end - buf) + 4 + content_length;
-        if (consumed > buf_len) consumed = buf_len;
+        if (!hdr_end) goto done;   /* shouldn't happen, but guard UB */
+        int consumed = (int)(hdr_end - buf) + 4 + (int)content_length;
+        if (consumed < 0 || consumed > buf_len) consumed = buf_len;
         buf_len -= consumed;
         if (buf_len > 0)
             memmove(buf, buf + consumed, (size_t)buf_len);

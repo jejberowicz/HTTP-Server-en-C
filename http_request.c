@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -9,20 +10,6 @@ static void str_tolower(char *s) {
         *s = (char)tolower((unsigned char)*s);
 }
 
-/*
- * Find the first occurrence of `needle` (length `nlen`) in `haystack`
- * (length `hlen`).  Returns a pointer to the match or NULL.
- */
-static const char *memmem_simple(const char *haystack, int hlen,
-                                  const char *needle,   int nlen) {
-    if (nlen == 0) return haystack;
-    for (int i = 0; i <= hlen - nlen; i++) {
-        if (memcmp(haystack + i, needle, nlen) == 0)
-            return haystack + i;
-    }
-    return NULL;
-}
-
 parse_result_t http_request_parse(const char *buf, int len, http_request_t *req) {
     if (!buf || len <= 0 || !req)
         return PARSE_ERROR;
@@ -30,18 +17,18 @@ parse_result_t http_request_parse(const char *buf, int len, http_request_t *req)
     memset(req, 0, sizeof(*req));
 
     /* ---- 1. Locate end of headers ---- */
-    const char *header_end = memmem_simple(buf, len, "\r\n\r\n", 4);
+    const char *header_end = memmem(buf, (size_t)len, "\r\n\r\n", 4);
     if (!header_end)
         return PARSE_INCOMPLETE;
 
     /* ---- 2. Parse request line ---- */
-    const char *line_end = memmem_simple(buf, len, "\r\n", 2);
+    const char *line_end = memmem(buf, (size_t)len, "\r\n", 2);
     if (!line_end)
         return PARSE_INCOMPLETE;
 
     /* method */
     const char *p = buf;
-    const char *space = memchr(p, ' ', line_end - p);
+    const char *space = memchr(p, ' ', (size_t)(line_end - p));
     if (!space)
         return PARSE_ERROR;
 
@@ -53,7 +40,7 @@ parse_result_t http_request_parse(const char *buf, int len, http_request_t *req)
     p = space + 1;
 
     /* path */
-    space = memchr(p, ' ', line_end - p);
+    space = memchr(p, ' ', (size_t)(line_end - p));
     if (!space)
         return PARSE_ERROR;
 
@@ -75,7 +62,7 @@ parse_result_t http_request_parse(const char *buf, int len, http_request_t *req)
     p = line_end + 2;  /* skip first \r\n */
 
     while (p < header_end) {
-        const char *eol = memmem_simple(p, (int)(header_end - p), "\r\n", 2);
+        const char *eol = memmem(p, (size_t)(header_end - p), "\r\n", 2);
         if (!eol)
             break;
 
@@ -83,7 +70,7 @@ parse_result_t http_request_parse(const char *buf, int len, http_request_t *req)
             return PARSE_ERROR;
 
         /* name */
-        const char *colon = memchr(p, ':', eol - p);
+        const char *colon = memchr(p, ':', (size_t)(eol - p));
         if (!colon)
             return PARSE_ERROR;
 

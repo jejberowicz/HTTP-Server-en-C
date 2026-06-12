@@ -1,6 +1,9 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include "static_files.h"
 
@@ -8,7 +11,7 @@ const char *mime_type(const char *path) {
     const char *ext = strrchr(path, '.');
     if (!ext)
         return "application/octet-stream";
-    ext++;  /* skip the dot */
+    ext++;
 
     if (strcmp(ext, "html") == 0 || strcmp(ext, "htm") == 0)
         return "text/html";
@@ -25,19 +28,6 @@ const char *mime_type(const char *path) {
     if (strcmp(ext, "pdf")  == 0) return "application/pdf";
 
     return "application/octet-stream";
-}
-
-/* Returns 1 if path contains a traversal sequence. */
-static int has_traversal(const char *path) {
-    /* Reject any ".." component */
-    const char *p = path;
-    while (*p) {
-        if (p[0] == '.' && p[1] == '.' &&
-            (p[2] == '/' || p[2] == '\0'))
-            return 1;
-        p++;
-    }
-    return 0;
 }
 
 static void set_error(http_response_t *res, int code, const char *msg) {
@@ -66,45 +56,66 @@ int static_file_serve(const char *root_dir,
     char *qs = strchr(path, '?');
     if (qs) *qs = '\0';
 
-    /* Guard against path traversal */
-    if (has_traversal(path)) {
-        set_error(res, 403, "Forbidden\r\n");
-        return 0;
-    }
-
-    /* Build filesystem path */
-    char fspath[4096];
+    /* Build raw filesystem path */
+    char fspath[PATH_MAX];
     int n = snprintf(fspath, sizeof(fspath), "%s%s", root_dir, path);
     if (n < 0 || n >= (int)sizeof(fspath)) {
         set_error(res, 500, "Internal Server Error\r\n");
         return -1;
     }
 
-    /* If path ends with '/', try index.html */
-    if (fspath[n - 1] == '/') {
+    /* Directory paths: try index.html */
+    if (fspath[n - 1] == '/')
         strncat(fspath, "index.html", sizeof(fspath) - strlen(fspath) - 1);
+
+    /*
+     * Security: resolve the canonical root once, then resolve the
+     * requested path. realpath() follows symlinks and collapses ".."
+     * components — any traversal attempt (literal or via symlinks)
+     * is caught by comparing the two canonical prefixes.
+     */
+    char root_canonical[PATH_MAX];
+    if (!realpath(root_dir, root_canonical)) {
+        set_error(res, 500, "Internal Server Error\r\n");
+        return -1;
     }
 
-    /* Stat the file */
+    char resolved[PATH_MAX];
+    if (!realpath(fspath, resolved)) {
+        if (errno == ENOENT || errno == ENOTDIR)
+            set_error(res, 404, "Not Found\r\n");
+        else
+            set_error(res, 500, "Internal Server Error\r\n");
+        return 0;
+    }
+
+    /* Verify resolved path is inside the web root */
+    size_t root_len = strlen(root_canonical);
+    if (strncmp(resolved, root_canonical, root_len) != 0 ||
+        (resolved[root_len] != '/' && resolved[root_len] != '\0')) {
+        set_error(res, 403, "Forbidden\r\n");
+        return 0;
+    }
+
+    /* Stat the canonical path (no symlink ambiguity at this point) */
     struct stat st;
-    if (stat(fspath, &st) < 0) {
+    if (stat(resolved, &st) < 0) {
         set_error(res, 404, "Not Found\r\n");
         return 0;
     }
 
-    /* If it's a directory, redirect to path/ */
+    /* Directory without trailing slash → 301 redirect */
     if (S_ISDIR(st.st_mode)) {
-        http_response_init(res, 301);
-        /* Build Location header: original path + "/" */
-        static char location[2100];
+        char location[2100];   /* local — thread-safe (was incorrectly static) */
         snprintf(location, sizeof(location), "%s/", req->path);
+        http_response_init(res, 301);
         http_response_add_header(res, "Location", location);
         set_error(res, 301, "Moved Permanently\r\n");
         return 0;
     }
 
     /* Read the file */
-    FILE *f = fopen(fspath, "rb");
+    FILE *f = fopen(resolved, "rb");
     if (!f) {
         set_error(res, 404, "Not Found\r\n");
         return 0;
@@ -126,7 +137,7 @@ int static_file_serve(const char *root_dir,
     fclose(f);
 
     http_response_init(res, 200);
-    http_response_add_header(res, "Content-Type", mime_type(fspath));
+    http_response_add_header(res, "Content-Type", mime_type(resolved));
 
     res->body        = body;
     res->body_len    = (int)st.st_size;

@@ -1,0 +1,7 @@
+httpserver
+*.o
+*.so
+cert.pem
+key.pem
+*.swp
+.DS_Store
